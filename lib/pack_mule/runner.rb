@@ -77,7 +77,7 @@ module PackMule
         log "Enqueueing job #{method.inspect} #{worker? ? "from within worker" : "from producer"} for #{obj.inspect}."
         jobs << async_send_opts(:process, {:pri => priority, :ttr => time_to_run}, method, [obj]+args)
       end
-      add_jobs jobsd
+      add_jobs jobs
     end
 
     # Enqueue a task related to this job, the total
