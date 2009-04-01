@@ -33,37 +33,12 @@
 # eval(runner.current_progress) * 100
 # => 15.0
 
-module Jobs
-  class NoRemoteRepresentationError < StandardError
-  end
-
-  class ResultPending < StandardError
-  end
-
-  class ResultMissing < StandardError
-  end
-
-  class JobReference
-    attr_accessor :id, :server
-    def initialize(id, server)
-      self.id = id
-      self.server = server
-    end
-    def to_a
-      [id, server]
-    end
-    alias dereference to_a
-    def rrepr
-      "#{self.class.rrepr}.new(#{id.rrepr}, #{server.rrepr})"
-    end
-  end
-
+module PackMule
   class Runner
 
     include AsyncObserver::Extensions
 
     attr_accessor :name, :priority, :time_to_run
-    attr_accessor :current_task_id
     attr_accessor :record_return_values
     attr_accessor :push_progress_updates
 
