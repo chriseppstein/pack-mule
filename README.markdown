@@ -1,7 +1,7 @@
 Pack Mule
 =========
 
-Pack Mule give you the facilities you need to run your code for hours or seconds in parallel across your cluster of Beanstalk workers. You can monitor the progress, coordinate tasks, and get results back when they complete.
+Pack Mule is a Ruby on Rails plugin that gives you the facilities you need to run your code for hours or seconds in parallel across your cluster of Beanstalk workers. You can monitor the progress, coordinate tasks, and get results back when they complete.
 
 Usage Example
 -------------
@@ -89,3 +89,10 @@ The deferred\_result method will call the method you specify passing the return 
 * <code>record\_return\_values</code> - set to true if you want to capture return values. Otherwise, they'll be mixed with the hay and feed to the mules. All return values must respond to <code>rrepr</code>.
 * <code>push\_progress\_updates</code> - If you are reading your progress more often than it changes set this to true. You can then use <code>current\_progress</code> to read it instead of <code>update\_progress</code> and the current\_progress will be updated for you whenever it changes.
 * <code>time\_to\_run</code> - Defaults to <code>2.minutes</code>. If any method takes longer there's a pretty good chance it will get ran again. Set this to the twice the maximum amount of time you expect any method to take.
+
+Dependencies
+------------
+* MemCache - Memcache stores the temporary information related to a Mule run like return values, related jobs, error counts, etc.
+* Beanstalk - Beanstalk is a priority queue server.
+* AsyncObserver - AsyncObserver is a rails plugin client for Beanstalk. It provides a worker that can run in a Rails context and easy access to queueing methods for asynchronous execution. It does not allow for task coordination. You can and should use it directly without pack mule for your simple tasks that don't take very long.
+* Elock - Elock is a mutex server that allows for resource access coordination across many processes and machines. Copy the included elock initializer to your initializer directories to setup access to your elock servers.
