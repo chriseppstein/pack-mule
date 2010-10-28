@@ -41,9 +41,12 @@ module PackMule
       def queue
         @queue ||= AsyncObserverQueue.new
       end
+      def cache_store
+        @cache_store ||= RailsDefaultCacheStore.new
+      end
     end
 
-    attr_accessor :queue
+    attr_accessor :queue, :cache_store
     attr_accessor :name, :priority, :time_to_run
     attr_accessor :record_return_values
     attr_accessor :push_progress_updates
@@ -56,9 +59,10 @@ module PackMule
       queue.default_time_to_run
     end
 
-    def initialize(name, priority = nil, record_return_values = false, push_progress_updates = false, time_to_run = nil, queue = nil)
+    def initialize(name, priority = nil, record_return_values = false, push_progress_updates = false, time_to_run = nil, queue = nil, cache_store = nil)
       @name = name
       @queue = queue || self.class.queue
+      @cache_store = cache_store || self.class.cache_store
       @priority = priority || default_priority
       @record_return_values = record_return_values
       @push_progress_updates = push_progress_updates
@@ -67,7 +71,7 @@ module PackMule
 
     # Instantiate this object remotely.
     def rrepr
-      "#{self.class.name}.new(#{name.rrepr}, #{priority.rrepr}, #{record_return_values.rrepr}, #{push_progress_updates.rrepr}, #{time_to_run.rrepr}, #{queue.rrepr})"
+      "#{self.class.name}.new(#{name.rrepr}, #{priority.rrepr}, #{record_return_values.rrepr}, #{push_progress_updates.rrepr}, #{time_to_run.rrepr}, #{queue.rrepr}, #{cache_store.rrepr})"
     end
 
     def self.to_param
@@ -116,17 +120,18 @@ module PackMule
 
     # Returns the number of errors that have occurred
     def get_error_count
-      CACHE[error_count_key] || 0
+      
+      cache_store[error_count_key] || 0
     end
 
     # Access the cached progress as set by the last update_progress call.
     def current_progress
-      CACHE[progress_key] || "0 / 0"
+      cache_store[progress_key] || "0 / 0"
     end
 
     # Returns the number of missing results
     def get_missing_result_count
-      CACHE[missing_result_count_key] || 0
+      cache_store[missing_result_count_key] || 0
     end
 
     # Returns the completion status of this entire runner.
@@ -135,13 +140,14 @@ module PackMule
     end
 
     def jobs
-      eval(CACHE[jobs_key] || "[]")
+      eval(cache_store[jobs_key] || "[]")
     end
   
     # Compute and return the current progress
     def update_progress
+      jobs = self.jobs
       completed, pending = jobs.partition{|job| queue.job_complete?(job)}
-      CACHE[progress_key] = "#{completed.size.to_f} / #{states.size.to_f}"
+      cache_store[progress_key] = "#{completed.size.to_f} / #{jobs.size.to_f}"
     end
 
     # This method defers until the dependencies complete.
@@ -254,13 +260,13 @@ module PackMule
 
     def increment_error_count
       synchronized(error_count_key) do
-        CACHE[error_count_key] = get_error_count + 1
+        cache_store[error_count_key] = get_error_count + 1
       end
     end
 
     def increment_missing_result_count(by = 1)
       synchronized(missing_result_count_key) do
-        CACHE[missing_result_count_key] = get_missing_result_count + by
+        cache_store[missing_result_count_key] = get_missing_result_count + by
       end
     end
 
@@ -269,7 +275,7 @@ module PackMule
         log "Adding #{jobs.size} jobs #{worker? ? "from within worker" : "from producer"}."
         existing_jobs = self.jobs
         existing_jobs += jobs
-        CACHE[jobs_key] = existing_jobs.rrepr
+        cache_store[jobs_key] = existing_jobs.rrepr
       end
       jobs
     ensure
@@ -281,7 +287,7 @@ module PackMule
         log "Adding Job #{worker? ? "from within worker" : "from producer"}: #{object_id}"
         jobs = self.jobs
         jobs << job
-        CACHE[jobs_key] = jobs.rrepr
+        cache_store[jobs_key] = jobs.rrepr
       end
       job
     ensure
@@ -328,9 +334,9 @@ module PackMule
       job = $current_job
       log "Setting return value for #{job.rrepr}: #{rv.rrepr}"
       synchronized(return_values_key) do
-        return_values = CACHE[return_values_key] || {}
+        return_values = cache_store[return_values_key] || {}
         return_values[job.rrepr] = rv.rrepr
-        CACHE[return_values_key] = return_values
+        cache_store[return_values_key] = return_values
       end
     rescue NoMethodError => nme
       if $! =~ /rrepr/
@@ -341,7 +347,7 @@ module PackMule
     end
 
     def evaluated_return_values
-      returning(CACHE[return_values_key] || Hash.new) do |rvs|
+      returning(cache_store[return_values_key] || Hash.new) do |rvs|
         for key in rvs.keys
           rvs.update(key => eval(rvs[key]))
         end
