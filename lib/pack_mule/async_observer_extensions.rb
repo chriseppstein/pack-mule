@@ -14,7 +14,7 @@ module PackMule
     # It wraps safe_dispatch to track the current job as a global variable.
     module Worker
       def safe_dispatch(job)
-        old_current_job, $current_job = $current_job, [job.id, job.conn.addr]
+        old_current_job, $current_job = $current_job, PackMule::AsyncObserverJob.new(job.id, job.server)
         super(job)
       ensure
         $current_job = old_current_job

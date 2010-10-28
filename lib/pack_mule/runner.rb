@@ -36,31 +36,38 @@
 module PackMule
   class Runner
 
-    include AsyncObserver::Extensions
+    class << self
+      attr_writer :queue, :cache_store
+      def queue
+        @queue ||= AsyncObserverQueue.new
+      end
+    end
 
+    attr_accessor :queue
     attr_accessor :name, :priority, :time_to_run
     attr_accessor :record_return_values
     attr_accessor :push_progress_updates
 
     def default_priority
-      AsyncObserver::Queue.metaclass.const_get("DEFAULT_PRI")
+      queue.default_priority
     end
 
     def default_time_to_run
-      AsyncObserver::Queue.metaclass.const_get("DEFAULT_TTR")
+      queue.default_time_to_run
     end
 
-    def initialize(name, priority = default_priority, record_return_values = false, push_progress_updates = false, time_to_run = default_time_to_run)
+    def initialize(name, priority = nil, record_return_values = false, push_progress_updates = false, time_to_run = nil, queue = nil)
       @name = name
-      @priority = priority
+      @queue = queue || self.class.queue
+      @priority = priority || default_priority
       @record_return_values = record_return_values
       @push_progress_updates = push_progress_updates
-      @time_to_run = time_to_run
+      @time_to_run = time_to_run || default_time_to_run
     end
 
     # Instantiate this object remotely.
     def rrepr
-      "#{self.class.name}.new(#{name.rrepr}, #{priority.rrepr}, #{record_return_values.rrepr}, #{push_progress_updates.rrepr}, #{time_to_run.rrepr})"
+      "#{self.class.name}.new(#{name.rrepr}, #{priority.rrepr}, #{record_return_values.rrepr}, #{push_progress_updates.rrepr}, #{time_to_run.rrepr}, #{queue.rrepr})"
     end
 
     def self.to_param
@@ -75,7 +82,7 @@ module PackMule
       jobs = []
       list.each do |obj|
         log "Enqueueing job #{method.inspect} #{worker? ? "from within worker" : "from producer"} for #{obj.inspect}."
-        jobs << async_send_opts(:process, {:pri => priority, :ttr => time_to_run}, method, [obj]+args)
+        jobs << queue.enqueue(self, :process, priority, time_to_run, 0, method, [obj]+args)
       end
       add_jobs jobs
     end
@@ -84,7 +91,7 @@ module PackMule
     # amount of work remaining will be incremented by one.
     # Returns a reference to the job
     def enqueue(method, *args)
-      add_job *async_send_opts(:process, {:pri => priority, :ttr => time_to_run}, method, args)
+      add_job queue.enqueue(self, :process, priority, time_to_run, 0, method, args)
     end
 
     # Processes the enqueued tasks, records the return value,
@@ -124,23 +131,16 @@ module PackMule
 
     # Returns the completion status of this entire runner.
     def complete?
-      !!job_states.detect{|state| state != :completed}
+      jobs.all?{|job| queue.job_complete?(job)}
     end
 
     def jobs
       eval(CACHE[jobs_key] || "[]")
     end
   
-    # Returns an array of the current states of all the jobs related to this runner.
-    def job_states
-      stats = jobs.map{|job| stats(*job)}
-      stats.map{|s| s[:state].to_sym}
-    end
-
     # Compute and return the current progress
     def update_progress
-      states = job_states
-      completed, pending = states.partition{|state| state == :completed}
+      completed, pending = jobs.partition{|job| queue.job_complete?(job)}
       CACHE[progress_key] = "#{completed.size.to_f} / #{states.size.to_f}"
     end
 
@@ -158,15 +158,12 @@ module PackMule
         # We post a new job, because AO doesn't have a good way for the job
         # code to delay itself. If we get an API enhancement, this could be made
         # more efficient.
-        opts = {
-          :pri => (priority + 1),
-          :ttr => time_to_run,
-          :delay => options.fetch(:sleep_time, 1).round
-        }
         log "Defer for #{$current_job.inspect}: Some results are pending. Requeueing."
-        new_job = async_send_opts(:deferred_result_as_worker, opts, method, jobs, options, *args)
-        add_job *new_job
-        set_return_value JobReference.new(*new_job)
+        new_job = queue.enqueue(self, :deferred_result_as_worker,
+                                priority + 1, time_to_run, options.fetch(:sleep_time, 1).round,
+                                method, jobs, options, *args)
+        add_job new_job
+        set_return_value JobReference.new(new_job)
       rescue => e
         if respond_to?(:handle_error)
           increment_error_count
@@ -183,11 +180,6 @@ module PackMule
       end
     ensure
       update_progress_in_bit if push_progress_updates
-    end
-
-    # Returns a boolean indicating whether a single job is complete.
-    def job_complete?(id, server)
-      stats(id, server)[:state].to_sym == :completed
     end
 
     # Gets all the return values for all the jobs provided
@@ -215,9 +207,9 @@ module PackMule
     # If the job is pending raise ResultPending
     # If the job is complete and we don't have a return value, returns :__missing
     def get_return_value!(job = first_job_queued, return_values = evaluated_return_values)
-      v = return_values.fetch(job, :__missing)
+      v = return_values.fetch(job.rrepr, :__missing)
       if v == :__missing
-        if job_complete?(*job)
+        if queue.job_complete?(job)
           :__missing
         else
           raise ResultPending.new(job.rrepr)
@@ -232,13 +224,6 @@ module PackMule
     # Returns the first job we queued. It's likely to be the primary task for this runner.
     def first_job_queued
       jobs.first
-    end
-
-    # Get the stats for each job
-    def stats(id, server)
-      HashWithIndifferentAccess.new(connection(server).job_stats(id))
-    rescue Beanstalk::NotFoundError
-      HashWithIndifferentAccess.new(:id => id, :state => "completed")
     end
 
     protected
@@ -291,14 +276,14 @@ module PackMule
       update_progress if push_progress_updates
     end
 
-    def add_job(id, server)
+    def add_job(job)
       synchronized(jobs_key) do
-        log "Adding Job #{worker? ? "from within worker" : "from producer"}: #{id}"
+        log "Adding Job #{worker? ? "from within worker" : "from producer"}: #{object_id}"
         jobs = self.jobs
-        jobs << [id, server]
+        jobs << job
         CACHE[jobs_key] = jobs.rrepr
       end
-      [id, server]
+      job
     ensure
       update_progress if push_progress_updates
     end
@@ -344,7 +329,7 @@ module PackMule
       log "Setting return value for #{job.rrepr}: #{rv.rrepr}"
       synchronized(return_values_key) do
         return_values = CACHE[return_values_key] || {}
-        return_values[job] = rv.rrepr
+        return_values[job.rrepr] = rv.rrepr
         CACHE[return_values_key] = return_values
       end
     rescue NoMethodError => nme
@@ -363,13 +348,9 @@ module PackMule
       end
     end
 
-    def connection(server)
-      AsyncObserver::Queue.queue.instance_variable_get("@connections")[server]
-    end
-
     def update_progress_in_bit
       # Queue a higher priority job to update the progress in memcached
-      async_send_opts(:update_progress, :pri => (priority - 10))
+      queue.enqueue self, :update_progress, priority - 10
     end
 
     def synchronized(key)
