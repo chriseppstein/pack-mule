@@ -4,7 +4,7 @@ conf_file=File.join(File.dirname(__FILE__), "../elock.yml")
 elock_config = YAML.load_file(conf_file) if File.exist? conf_file
 ELOCK_SERVERS=elock_config ? elock_config['servers'] : []
 
-if ELOCK_SERVERS.empty? || RAILS_ENV == "test"
+if ELOCK_SERVERS.empty? || Rails.env.test?
   RAILS_DEFAULT_LOGGER.info "Using null lock."
   # If there are no servers or we're testing, locking is always successful.
   class NullLock
